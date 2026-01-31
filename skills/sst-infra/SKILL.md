@@ -150,31 +150,7 @@ jobs:
       - run: npx sst deploy --stage ${{ inputs.stage }}
 ```
 
-## Route Protection (proxy.ts)
 
-```typescript
-// src/proxy.ts
-import { NextRequest, NextResponse } from 'next/server'
-import { authServer } from '@saas4dev/auth'
-
-const protectedRoutes = ['/dashboard', '/settings']
-
-export async function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl
-  const isProtected = protectedRoutes.some(r => pathname.startsWith(r))
-
-  const session = await authServer.api.getSession({
-    headers: await headers(),
-  })
-
-  if (isProtected && !session) {
-    const url = new URL('/sign-in', request.url)
-    url.searchParams.set('redirect', pathname)
-    return NextResponse.redirect(url)
-  }
-  return NextResponse.next()
-}
-```
 
 ## Local Development
 
