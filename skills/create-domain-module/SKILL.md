@@ -1,6 +1,6 @@
 ---
 description: Creates complete, production-ready feature modules following the 10 architectural principles, with emphasis on state isolation, service layer patterns, and runtime-agnostic design for deployment flexibility. Adapted for Next.js 15+, DynamoDB/OneTable, ZSA, and Vitest.
-name: Feature Module Generator (Next.js + DynamoDB)
+name: create-domain-module
 ---
 
 # Feature Module Generator (Next.js + DynamoDB)
