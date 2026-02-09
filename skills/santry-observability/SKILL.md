@@ -1,327 +1,277 @@
 ---
 name: santry-observability
-description: "Guide for implementing observability Next.js with Sentry for server actions using ZSA (Zod Server Actions)"
+description: Sentry observability for Clean Architecture layers. Error tracking per layer, transaction tracing for Use Cases, user context in procedures, and performance monitoring.
 ---
 
-## Observability with Sentry
+# Sentry Observability (Clean Architecture)
 
-### Installation
+## Layer-Specific Logging
+
+| Layer | What to Log | Sentry Feature |
+|-------|-------------|----------------|
+| Domain | Entity validation failures | Exception with tags |
+| Application | Use Case execution, timing | Transaction spans |
+| Infrastructure | Repository operations, DB timing | Child spans |
+| Presentation | Action errors, user context | Breadcrumbs + user |
+
+## Installation
 
 ```bash
 npm install @sentry/nextjs
 npx @sentry/wizard@latest -i nextjs
 ```
 
-### Configuration
+## Configuration
 
 ```typescript
-// sentry.client.config.ts
-import * as Sentry from "@sentry/nextjs";
-
-Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: process.env.NODE_ENV,
-  tracesSampleRate: 1.0,
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
-});
-
 // sentry.server.config.ts
-import * as Sentry from "@sentry/nextjs";
+import * as Sentry from '@sentry/nextjs'
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV,
-  tracesSampleRate: 1.0,
-});
+  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+})
 ```
 
-### Tracking Server Action Errors
+## Use Case Tracing
+
+Wrap Use Case execution with transaction spans.
 
 ```typescript
-"use server";
+// src/backend/application/category/use-cases/create-category.ts
+import * as Sentry from '@sentry/nextjs'
 
-import * as Sentry from "@sentry/nextjs";
-import { createServerAction } from "zsa";
-import z from "zod";
+export class CreateCategoryUseCase {
+  constructor(private readonly repository: ICategoryRepository) {}
 
-export const createPaymentAction = createServerAction()
-  .input(z.object({ 
-    amount: z.number().positive(), 
-    userId: z.string() 
-  }))
-  .onError(async ({ err, input }) => {
-    // Automatically capture errors to Sentry
-    Sentry.captureException(err, {
-      tags: {
-        action: "createPayment",
-        userId: input.userId,
-      },
-      contexts: {
-        action: {
-          input: input,
-          timestamp: new Date().toISOString(),
-        },
-      },
-    });
-  })
-  .handler(async ({ input }) => {
-    return await PaymentService.create(input);
-  });
-```
-
-### Transaction Tracing
-
-```typescript
-"use server";
-
-import * as Sentry from "@sentry/nextjs";
-import { createServerAction } from "zsa";
-import z from "zod";
-
-export const processOrderAction = createServerAction()
-  .input(z.object({ orderId: z.string() }))
-  .handler(async ({ input }) => {
-    return await Sentry.startSpan(
+  async execute(input: CreateCategoryInput): Promise<CategoryDTO> {
+    return Sentry.startSpan(
       {
-        name: "processOrderAction",
-        op: "server.action",
-        attributes: {
-          orderId: input.orderId,
-        },
+        name: 'CreateCategoryUseCase.execute',
+        op: 'usecase.execute',
+        attributes: { userId: input.userId },
       },
-      async (span) => {
-        // Step 1: Validate order
-        const validationSpan = Sentry.startInactiveSpan({
-          name: "validateOrder",
-          op: "validation",
-        });
-        const order = await OrderService.validate(input.orderId);
-        validationSpan?.end();
+      async () => {
+        // Domain operation
+        const category = Sentry.startSpan(
+          { name: 'Category.create', op: 'domain.entity' },
+          () => Category.create({ id: crypto.randomUUID(), ...input })
+        )
 
-        // Step 2: Process payment
-        const paymentSpan = Sentry.startInactiveSpan({
-          name: "processPayment",
-          op: "payment",
-        });
-        const payment = await PaymentService.process(order);
-        paymentSpan?.end();
+        // Repository operation
+        await Sentry.startSpan(
+          { name: 'repository.save', op: 'db.write' },
+          () => this.repository.save(category)
+        )
 
-        // Step 3: Update inventory
-        const inventorySpan = Sentry.startInactiveSpan({
-          name: "updateInventory",
-          op: "inventory",
-        });
-        await InventoryService.update(order.items);
-        inventorySpan?.end();
-
-        span.setStatus({ code: 1, message: "success" });
-        return { orderId: order.id, status: "completed" };
+        return CategoryDTO.fromEntity(category)
       }
-    );
-  });
+    )
+  }
+}
 ```
 
-### User Context & Breadcrumbs
+## Repository Timing
+
+Log database operations with timing.
 
 ```typescript
-"use server";
+// src/backend/infrastructure/category/repositories/category-repository-impl.ts
+import * as Sentry from '@sentry/nextjs'
 
-import * as Sentry from "@sentry/nextjs";
-import { authedProcedure } from "@/lib/procedures";
-import z from "zod";
+export class CategoryRepositoryImpl implements ICategoryRepository {
+  async save(category: Category): Promise<void> {
+    return Sentry.startSpan(
+      {
+        name: 'CategoryRepository.save',
+        op: 'db.dynamodb',
+        attributes: { categoryId: category.id },
+      },
+      async () => {
+        await this.model.create(category.toPersistence())
+      }
+    )
+  }
 
-export const updateProfileAction = authedProcedure
+  async findById(id: string, userId: string): Promise<Category | null> {
+    return Sentry.startSpan(
+      {
+        name: 'CategoryRepository.findById',
+        op: 'db.dynamodb',
+        attributes: { categoryId: id },
+      },
+      async () => {
+        const data = await this.model.get({ pk: userId, sk: id })
+        return data ? Category.fromPersistence(data) : null
+      }
+    )
+  }
+}
+```
+
+## Server Action Error Handling
+
+Capture domain exceptions with context.
+
+```typescript
+// src/features/category/actions/create-category.ts
+'use server'
+import * as Sentry from '@sentry/nextjs'
+import { authedProcedure } from '@/lib/procedures'
+import { DIContainer, TOKENS } from '@/backend/di'
+import { DomainException } from '@/backend/domain/shared/exceptions'
+
+export const createCategoryAction = authedProcedure
   .createServerAction()
-  .input(z.object({ name: z.string(), email: z.string().email() }))
-  .onStart(async () => {
-    Sentry.addBreadcrumb({
-      category: "action",
-      message: "Profile update started",
-      level: "info",
-    });
-  })
+  .input(CreateCategorySchema)
   .handler(async ({ input, ctx }) => {
-    // Set user context for all events
-    Sentry.setUser({
-      id: ctx.user.id,
-      email: ctx.user.email,
-      username: ctx.user.name,
-    });
-
-    Sentry.addBreadcrumb({
-      category: "action",
-      message: "Updating user profile",
-      level: "info",
-      data: { userId: ctx.user.id },
-    });
-
     try {
-      const result = await UserService.updateProfile(ctx.user.id, input);
-      
-      Sentry.addBreadcrumb({
-        category: "action",
-        message: "Profile updated successfully",
-        level: "info",
-      });
-
-      return result;
+      const useCase = DIContainer.resolve(TOKENS.CreateCategoryUseCase)
+      return await useCase.execute({ ...input, userId: ctx.user.id })
     } catch (error) {
-      Sentry.addBreadcrumb({
-        category: "action",
-        message: "Profile update failed",
-        level: "error",
-        data: { error: (error as Error).message },
-      });
-      throw error;
+      if (error instanceof DomainException) {
+        Sentry.captureException(error, {
+          tags: {
+            action: 'createCategory',
+            layer: 'domain',
+            code: error.code,
+          },
+          contexts: {
+            input: { name: input.name },
+            user: { id: ctx.user.id },
+          },
+        })
+      }
+      throw error
     }
-  });
+  })
 ```
 
-### Custom Error Boundaries with Sentry
+## Procedure with User Context
+
+Set user context early in the procedure chain.
 
 ```typescript
-// components/error-boundary.tsx
-"use client";
+// src/lib/procedures.ts
+import * as Sentry from '@sentry/nextjs'
+import { createServerActionProcedure } from 'zsa'
 
-import * as Sentry from "@sentry/nextjs";
-import { useEffect } from "react";
+export const authedProcedure = createServerActionProcedure()
+  .handler(async () => {
+    const session = await auth()
+
+    if (!session?.user) {
+      Sentry.captureMessage('Unauthenticated access attempt', {
+        level: 'warning',
+      })
+      throw new Error('Not authenticated')
+    }
+
+    // Set user context for all subsequent errors
+    Sentry.setUser({
+      id: session.user.id,
+      email: session.user.email,
+    })
+
+    Sentry.addBreadcrumb({
+      category: 'auth',
+      message: 'User authenticated',
+      level: 'info',
+    })
+
+    return { user: session.user }
+  })
+```
+
+## Exception Hierarchy Mapping
+
+Map domain exceptions to Sentry severity levels.
+
+```typescript
+// src/backend/domain/shared/exceptions/sentry-mapper.ts
+import * as Sentry from '@sentry/nextjs'
+import { DomainException, NotFoundException, ValidationException } from './index'
+
+export function captureToSentry(error: unknown, context: Record<string, unknown>) {
+  if (error instanceof ValidationException) {
+    Sentry.captureException(error, {
+      level: 'warning',
+      tags: { layer: 'domain', type: 'validation' },
+      contexts: { validation: context },
+    })
+  } else if (error instanceof NotFoundException) {
+    Sentry.captureException(error, {
+      level: 'info',
+      tags: { layer: 'domain', type: 'not_found' },
+      contexts: { query: context },
+    })
+  } else if (error instanceof DomainException) {
+    Sentry.captureException(error, {
+      level: 'error',
+      tags: { layer: 'domain', type: 'business_rule' },
+      contexts: { domain: context },
+    })
+  } else {
+    Sentry.captureException(error, {
+      level: 'error',
+      tags: { layer: 'unknown' },
+      contexts: { raw: context },
+    })
+  }
+}
+```
+
+## Client Error Boundary
+
+```typescript
+// src/components/error-boundary.tsx
+'use client'
+import * as Sentry from '@sentry/nextjs'
+import { useEffect } from 'react'
 
 export function ActionErrorBoundary({
   error,
   reset,
 }: {
-  error: Error & { digest?: string };
-  reset: () => void;
+  error: Error & { digest?: string }
+  reset: () => void
 }) {
   useEffect(() => {
     Sentry.captureException(error, {
-      tags: {
-        component: "ActionErrorBoundary",
-      },
-    });
-  }, [error]);
+      tags: { component: 'ActionErrorBoundary' },
+    })
+  }, [error])
 
   return (
-    <div className="error-container">
-      <h2>Something went wrong!</h2>
+    <div>
+      <h2>Something went wrong</h2>
       <button onClick={reset}>Try again</button>
     </div>
-  );
+  )
 }
 ```
 
-### Performance Monitoring
+## Best Practices
 
-```typescript
-"use server";
+1. **Set user context in procedures** - Not in individual actions
+2. **Use spans for Use Cases** - Track execution time
+3. **Add breadcrumbs for flow** - Auth, validation, processing
+4. **Tag by layer** - domain, application, infrastructure, presentation
+5. **Map exceptions to severity** - validation=warning, not_found=info, business=error
+6. **Scrub sensitive data** - Never log passwords, tokens
 
-import * as Sentry from "@sentry/nextjs";
-import { createServerAction } from "zsa";
-import z from "zod";
-
-export const searchAction = createServerAction()
-  .input(z.object({ query: z.string(), filters: z.record(z.any()).optional() }))
-  .handler(async ({ input }) => {
-    const transaction = Sentry.startTransaction({
-      name: "searchAction",
-      op: "server.action",
-      data: {
-        query: input.query,
-        filtersCount: Object.keys(input.filters || {}).length,
-      },
-    });
-
-    try {
-      const span1 = transaction.startChild({
-        op: "db.query",
-        description: "Search database",
-      });
-      const results = await db.search(input.query);
-      span1.finish();
-
-      const span2 = transaction.startChild({
-        op: "processing",
-        description: "Apply filters",
-      });
-      const filtered = applyFilters(results, input.filters);
-      span2.finish();
-
-      transaction.setStatus("ok");
-      return filtered;
-    } catch (error) {
-      transaction.setStatus("internal_error");
-      Sentry.captureException(error);
-      throw error;
-    } finally {
-      transaction.finish();
-    }
-  });
-```
-
-### Integration with Procedures
-
-```typescript
-// lib/procedures.ts
-"use server";
-
-import * as Sentry from "@sentry/nextjs";
-import { createServerActionProcedure } from "zsa";
-
-export const authedProcedure = createServerActionProcedure()
-  .handler(async () => {
-    const session = await auth();
-    
-    if (!session?.user) {
-      Sentry.captureMessage("Unauthenticated access attempt", {
-        level: "warning",
-        tags: { procedure: "authedProcedure" },
-      });
-      throw new Error("Not authenticated");
-    }
-
-    // Set user context for all subsequent operations
-    Sentry.setUser({
-      id: session.user.id,
-      email: session.user.email,
-      role: session.user.role,
-    });
-
-    Sentry.addBreadcrumb({
-      category: "auth",
-      message: "User authenticated",
-      level: "info",
-      data: { userId: session.user.id },
-    });
-
-    return { 
-      user: { 
-        id: session.user.id, 
-        email: session.user.email, 
-        role: session.user.role 
-      } 
-    };
-  });
-```
-
-### Best Practices for Sentry Integration
-
-1. **Always capture context** - Include user ID, action name, and relevant input in error reports
-2. **Use breadcrumbs** - Track action lifecycle (start, validation, processing, completion)
-3. **Set appropriate log levels** - `error` for failures, `warning` for auth issues, `info` for normal flow
-4. **Scrub sensitive data** - Never log passwords, tokens, or PII
-5. **Use transaction tracing** - Group related operations for performance analysis
-6. **Set user context early** - In procedures, not in individual actions
-7. **Tag errors properly** - Use consistent tags (action name, feature, user role) for filtering
-8. **Monitor performance** - Track slow actions with custom spans
-
-### Environment Variables
+## Environment Variables
 
 ```bash
-# .env.local
 NEXT_PUBLIC_SENTRY_DSN=your-client-dsn
 SENTRY_DSN=your-server-dsn
 SENTRY_AUTH_TOKEN=your-auth-token
 SENTRY_ORG=your-org
 SENTRY_PROJECT=your-project
 ```
+
+## References
+
+- Feature Architecture: `skills/feature-architecture/SKILL.md`
+- Server Actions: `skills/nextjs-server-actions/SKILL.md`

@@ -1,191 +1,174 @@
 ---
 name: zod-validation
-description: Guide for Zod schema validation patterns in TypeScript. Use when creating validation schemas, defining types, validating forms, API inputs, or handling validation errors.
+description: "Guide for Zod validation schemas in Clean Architecture. Zod validates input SHAPE in Presentation layer; business rules belong in Entity.validate(). Use when creating input schemas for server actions."
 ---
 
-# Zod Validation Patterns
+# Zod Validation (Presentation Layer Only)
+
+## Where Validation Belongs
+
+| Validation Type | Location | Example |
+|-----------------|----------|---------|
+| **Input Shape** | Zod Schema (Presentation) | Required fields, string/number types |
+| **Format** | Zod Schema | Email format, ULID format, URL |
+| **Basic Constraints** | Zod Schema | min/max length, positive numbers |
+| **Business Rules** | Entity.validate() (Domain) | Name uniqueness, status transitions |
+| **Complex Rules** | Use Case (Application) | Cross-entity validation |
 
 ## Schema Location
 
 ```
-features/<feature>/model/
-├── <feature>-schemas.ts      # Zod schemas + inferred types
-└── <feature>-constants.ts    # Constants used in schemas
+src/features/<feature>/schemas/
+└── <entity>-schemas.ts
 ```
 
-## Basic Schema
+## Input Schemas (Shape Only)
 
 ```typescript
-// account-schemas.ts
+// src/features/category/schemas/category-schemas.ts
 import { z } from 'zod'
 
-export const AccountSchema = z.object({
+// Shape validation - NOT business rules
+export const CreateCategorySchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  description: z.string().optional(),
+})
+
+export const UpdateCategorySchema = z.object({
   id: z.string().ulid(),
-  userId: z.string().ulid(),
-  name: z.string().min(1).max(100),
-  balance: z.number().default(0),
-  deleted: z.boolean().default(false),
-  createdAt: z.date(),
-  updatedAt: z.date(),
+  name: z.string().min(1).optional(),
+  description: z.string().optional(),
 })
 
-export type Account = z.infer<typeof AccountSchema>
-```
-
-## Input Schemas (Pick/Omit)
-
-```typescript
-// Create - only user-provided fields
-export const CreateAccountSchema = AccountSchema.pick({
-  name: true,
+export const GetCategorySchema = z.object({
+  id: z.string().ulid(),
 })
-export type CreateAccountInput = z.infer<typeof CreateAccountSchema>
 
-// Update - partial user fields
-export const UpdateAccountSchema = AccountSchema.pick({
-  name: true,
-  balance: true,
-}).partial()
-export type UpdateAccountInput = z.infer<typeof UpdateAccountSchema>
+export const ListCategoriesSchema = z.object({
+  limit: z.coerce.number().min(1).max(100).optional(),
+  cursor: z.string().optional(),
+  status: z.enum(['active', 'inactive', 'archived']).optional(),
+})
+
+export type CreateCategoryInput = z.infer<typeof CreateCategorySchema>
+export type UpdateCategoryInput = z.infer<typeof UpdateCategorySchema>
 ```
 
-## Common Patterns
+## Common Validators
 
 ```typescript
-// Optional with default
-z.string().default('')
-z.number().default(0)
-z.boolean().default(false)
+// ID formats
+z.string().ulid()
+z.string().uuid()
 
-// Nullable vs Optional
-z.string().nullable()      // string | null
-z.string().optional()      // string | undefined
-z.string().nullish()       // string | null | undefined
+// Strings
+z.string().min(1, 'Required')
+z.string().max(255)
+z.string().email()
+z.string().url()
+z.string().trim()
+
+// Numbers
+z.coerce.number()           // String to number
+z.number().positive()
+z.number().min(0).max(100)
+
+// Optional/Nullable
+z.string().optional()       // string | undefined
+z.string().nullable()       // string | null
 
 // Enums
-export const StatusSchema = z.enum(['active', 'suspended', 'deleted'])
-export type Status = z.infer<typeof StatusSchema>
-
-// Literals
-z.literal('draft')
-
-// Union
-z.union([z.string(), z.number()])
+z.enum(['active', 'inactive', 'archived'])
 
 // Arrays
-z.array(z.string())
-z.string().array()         // Same as above
-
-// Records/Maps
-z.record(z.string())       // { [key: string]: string }
+z.array(z.string()).min(1)
 ```
 
-## Shared Schemas (@saas4dev/core)
+## Business Rules in Entity (NOT Zod)
 
+### ❌ Bad: Business Rules in Zod
 ```typescript
-import {
-  UlidSchema,           // z.string().ulid()
-  EmailSchema,          // z.string().email()
-  RequiredStringSchema, // z.string().min(1)
-  UrlSchema,            // z.string().url()
-  PhoneSchema,          // Phone validation
-} from '@saas4dev/core'
-```
-
-## Refinements
-
-```typescript
-// Custom validation
-const PasswordSchema = z.string()
-  .min(8)
-  .refine(
-    (val) => /[A-Z]/.test(val),
-    { message: 'Must contain uppercase' }
-  )
-  .refine(
-    (val) => /[0-9]/.test(val),
-    { message: 'Must contain number' }
-  )
-
-// Cross-field validation
-const DateRangeSchema = z.object({
-  startDate: z.date(),
-  endDate: z.date(),
-}).refine(
-  (data) => data.endDate > data.startDate,
-  { message: 'End date must be after start', path: ['endDate'] }
-)
-```
-
-## Transform
-
-```typescript
-// Transform input
-const TrimmedString = z.string().trim()
-const LowerEmail = z.string().email().toLowerCase()
-
-// Coerce types
-z.coerce.number()    // "123" -> 123
-z.coerce.date()      // "2024-01-01" -> Date
-z.coerce.boolean()   // "true" -> true
-```
-
-## Error Handling
-
-```typescript
-import { convertZodErrorsToKeyValue } from '@saas4dev/core'
-
-try {
-  const data = Schema.parse(input)
-} catch (error) {
-  if (error instanceof z.ZodError) {
-    const fieldErrors = convertZodErrorsToKeyValue(error)
-    // { name: 'Required', email: 'Invalid email' }
-    return { success: false, errors: fieldErrors }
-  }
-}
-
-// Safe parse (no throw)
-const result = Schema.safeParse(input)
-if (!result.success) {
-  const errors = convertZodErrorsToKeyValue(result.error)
-}
-```
-
-## Form Integration
-
-```typescript
-// React Hook Form
-import { zodResolver } from '@hookform/resolvers/zod'
-
-const form = useForm<CreateAccountInput>({
-  resolver: zodResolver(CreateAccountSchema),
-  defaultValues: { name: '' },
+export const CreateCategorySchema = z.object({
+  name: z.string()
+    .refine(name => !name.includes('banned'), 'Contains banned words')  // Business rule!
+    .refine(name => !name.startsWith('_'), 'Invalid format'),           // Business rule!
 })
 ```
 
-## Server Action Input
+### ✅ Good: Shape in Zod, Rules in Entity
+```typescript
+// Zod - shape only
+export const CreateCategorySchema = z.object({
+  name: z.string().min(1),
+})
+
+// Entity - business rules
+export class Category {
+  private validate(): void {
+    if (this.props.name.includes('banned')) {
+      throw new CategoryValidationException('Name contains banned words')
+    }
+    if (this.props.name.startsWith('_')) {
+      throw new CategoryValidationException('Name cannot start with underscore')
+    }
+  }
+}
+```
+
+## Zod in Server Actions
 
 ```typescript
-// ZSA validates automatically
-export const createAction = authedProcedure
+'use server'
+import { authedProcedure } from '@/lib/zsa'
+import { CreateCategorySchema } from '../schemas/category-schemas'
+
+export const createCategoryAction = authedProcedure
   .createServerAction()
-  .input(CreateAccountSchema, { type: 'formData' })
-  .handler(async ({ input }) => {
-    // input is typed and validated
+  .input(CreateCategorySchema)  // Validates shape before handler
+  .handler(async ({ input, ctx }) => {
+    const useCase = DIContainer.resolve<CreateCategoryUseCase>(TOKENS.CreateCategoryUseCase)
+    return useCase.execute({ ...input, userId: ctx.user.id })
   })
 ```
 
-## Constants Pattern
+## Validation Error Handling
 
 ```typescript
-// account-constants.ts
-export const ACCOUNT_MAX_NAME_LENGTH = 100
-export const ACCOUNT_TYPES = ['checking', 'savings', 'credit'] as const
-
-// Use in schema
-const AccountSchema = z.object({
-  name: z.string().max(ACCOUNT_MAX_NAME_LENGTH),
-  type: z.enum(ACCOUNT_TYPES),
-})
+// Client side
+const [data, err] = await execute({ name: '' })
+if (err) {
+  // err.name = "ZodError"
+  // err.fieldErrors = { name: ["Name is required"] }
+}
 ```
+
+## Anti-Patterns
+
+| Anti-Pattern | Correct Approach |
+|--------------|------------------|
+| Business rules in Zod (.refine) | Entity.validate() |
+| Async validation in Zod | Use Case |
+| Database checks in Zod | Repository |
+
+## Detection Commands
+
+```bash
+# Business logic in schemas
+grep -rn "refine\|superRefine" src/features/*/schemas/
+
+# Complex validation (should be in Entity)
+grep -rn "banned\|forbidden\|unique\|exists" src/features/*/schemas/
+```
+
+## Summary
+
+| Layer | What to Validate |
+|-------|------------------|
+| **Presentation (Zod)** | Shape, format, basic constraints |
+| **Domain (Entity)** | Business rules, invariants |
+| **Application (Use Case)** | Cross-entity rules |
+
+## References
+
+- Server Actions: `skills/nextjs-server-actions/SKILL.md`
+- Create Domain Module: `skills/create-domain-module/SKILL.md`

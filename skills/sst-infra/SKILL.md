@@ -1,6 +1,6 @@
 ---
 name: sst-infra
-description: Guide for AWS serverless infrastructure using SST v3 (Serverless Stack). Use when configuring deployment, creating stacks, managing secrets, setting up CI/CD, or deploying Next.js applications to AWS Lambda with DynamoDB.
+description: Guide for AWS serverless infrastructure using SST v3. Covers DynamoDB, Next.js deployment, Lambda handlers with Clean Architecture adapter pattern, and CI/CD configuration.
 ---
 
 # SST v3 Infrastructure
@@ -9,12 +9,14 @@ description: Guide for AWS serverless infrastructure using SST v3 (Serverless St
 
 ```
 project/
-├── sst.config.ts          # Main SST config
+├── sst.config.ts              # Main SST config
 ├── stacks/
-│   ├── dynamodb.ts        # Database stack
-│   ├── nextjs.ts          # Next.js deployment
-│   └── environment.ts     # Environment config
-└── open-next.config.ts    # Lambda streaming config
+│   ├── dynamodb.ts            # Database stack
+│   ├── nextjs.ts              # Next.js deployment
+│   └── api.ts                 # Lambda API stack
+├── open-next.config.ts        # Lambda streaming config
+└── src/
+    └── backend/               # Clean Architecture backend
 ```
 
 ## Main Config
@@ -67,14 +69,95 @@ import { table } from './dynamodb'
 export const site = new sst.aws.Nextjs('Site', {
   path: 'apps/web',
   link: [table],
-  environment: {
-    TABLE_NAME: table.name,
-  },
+  environment: { TABLE_NAME: table.name },
   domain: {
     name: `${$app.stage === 'prod' ? '' : `${$app.stage}.`}myapp.com`,
     dns: sst.aws.dns({ zone: 'myapp.com' }),
   },
 })
+```
+
+## Lambda Handler with Clean Architecture
+
+Lambda handlers follow the **thin adapter pattern** - resolve Use Case from DI and execute.
+
+```typescript
+// src/functions/create-category.ts
+import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda'
+import { DIContainer, TOKENS, initializeDI } from '@/backend/di'
+import { CreateCategoryUseCase } from '@/backend/application/category/use-cases'
+import { DomainException } from '@/backend/domain/shared/exceptions'
+
+// Initialize DI once per cold start
+let initialized = false
+
+export async function handler(
+  event: APIGatewayProxyEventV2
+): Promise<APIGatewayProxyResultV2> {
+  // Initialize DI Container (cold start only)
+  if (!initialized) {
+    await initializeDI()
+    initialized = true
+  }
+
+  try {
+    const input = JSON.parse(event.body ?? '{}')
+
+    // Thin adapter: resolve → execute → return
+    const useCase = DIContainer.resolve<CreateCategoryUseCase>(
+      TOKENS.CreateCategoryUseCase
+    )
+    const result = await useCase.execute(input)
+
+    return {
+      statusCode: 201,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(result),
+    }
+  } catch (error) {
+    return mapErrorToResponse(error)
+  }
+}
+
+function mapErrorToResponse(error: unknown): APIGatewayProxyResultV2 {
+  if (error instanceof DomainException) {
+    return {
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: error.message, code: error.code }),
+    }
+  }
+
+  console.error('Unhandled error:', error)
+  return {
+    statusCode: 500,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ error: 'Internal server error' }),
+  }
+}
+```
+
+## Lambda API Stack
+
+```typescript
+// stacks/api.ts
+import { table } from './dynamodb'
+
+const api = new sst.aws.ApiGatewayV2('Api')
+
+api.route('POST /categories', {
+  handler: 'src/functions/create-category.handler',
+  link: [table],
+  environment: { TABLE_NAME: table.name },
+})
+
+api.route('GET /categories/{id}', {
+  handler: 'src/functions/get-category.handler',
+  link: [table],
+  environment: { TABLE_NAME: table.name },
+})
+
+export { api }
 ```
 
 ## OpenNext Config
@@ -94,22 +177,19 @@ export default config
 ## Commands
 
 ```bash
-# Development (local Lambda)
+# Development
 npx sst dev --stage dev
 
 # Deploy
 npx sst deploy --stage dev
 npx sst deploy --stage prod
 
-# Remove
-npx sst remove --stage dev
-
-# Outputs
-npx sst outputs --stage dev
-
 # Secrets
 npx sst secret set AUTH_SECRET "value" --stage dev
 npx sst secret list --stage dev
+
+# Outputs
+npx sst outputs --stage dev
 ```
 
 ## Environment Stages
@@ -150,8 +230,6 @@ jobs:
       - run: npx sst deploy --stage ${{ inputs.stage }}
 ```
 
-
-
 ## Local Development
 
 ```bash
@@ -162,3 +240,8 @@ docker run -p 8000:8000 amazon/dynamodb-local
 TABLE_NAME=dev-Table
 DYNAMODB_LOCAL=true
 ```
+
+## References
+
+- Feature Architecture: `skills/feature-architecture/SKILL.md`
+- Bun Lambda: `skills/bun-aws-lambda/SKILL.md`

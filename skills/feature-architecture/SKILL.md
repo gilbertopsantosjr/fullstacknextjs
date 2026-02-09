@@ -1,113 +1,140 @@
 ---
 name: feature-architecture
-description: Guide for implementing features in a layered Next.js full-stack architecture. Use when planning new features, understanding the layer structure (Model, DAL, Service, Actions, Components, Pages), or deciding where code should live.
+description: Guide for implementing features in Clean Architecture OOP with Next.js. Use when planning new features, understanding the 4-layer structure (Domain, Application, Infrastructure, Presentation), or deciding where code should live.
 ---
 
-# Feature Architecture
+# Feature Architecture (Clean Architecture OOP)
 
 ## Layer Overview
 
 ```
-┌─────────────────────────────────────────┐
-│  Pages (src/app/)                       │  Route handlers, layouts
-├─────────────────────────────────────────┤
-│  Components (features/*/components/)    │  UI elements
-├─────────────────────────────────────────┤
-│  Server Actions (features/*/usecases/)  │  API layer
-├─────────────────────────────────────────┤
-│  Services (features/*/<name>-service)   │  Business logic
-├─────────────────────────────────────────┤
-│  DAL (features/*/dal/)                  │  Database access
-├─────────────────────────────────────────┤
-│  Model (features/*/model/)              │  Schemas, types
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Presentation Layer (src/features/, src/app/)                   │
+│  Server Actions (thin adapters), Components, Pages              │
+├─────────────────────────────────────────────────────────────────┤
+│  Application Layer (src/backend/application/)                   │
+│  Use Cases, DTOs, Application Services                          │
+├─────────────────────────────────────────────────────────────────┤
+│  Infrastructure Layer (src/backend/infrastructure/)             │
+│  Repository Implementations, External Services, DI Container    │
+├─────────────────────────────────────────────────────────────────┤
+│  Domain Layer (src/backend/domain/)                             │
+│  Entities, Value Objects, Repository Interfaces, Domain Events  │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+## The Dependency Rule
+
+**CRITICAL**: Dependencies only point inward. Inner layers NEVER import from outer layers.
+
+```
+Domain ← Application ← Infrastructure ← Presentation
+```
+
+| Layer | Can Import From | CANNOT Import From |
+|-------|-----------------|-------------------|
+| Domain | Nothing | Application, Infrastructure, Presentation |
+| Application | Domain | Infrastructure, Presentation |
+| Infrastructure | Domain, Application | Presentation |
+| Presentation | All layers | - |
 
 ## Implementation Order
 
-**Always implement bottom-up:**
+**Always implement from inside-out (Domain first):**
 
-1. **Model** - Zod schemas, types, constants
-2. **DAL** - Database operations
-3. **Service** - Business logic
-4. **Actions** - Server actions
-5. **Components** - UI
-6. **Pages** - Routes
+1. **Entity** - Domain object with private constructor, validate(), factory methods
+2. **Repository Interface** - Contract in Domain layer
+3. **Use Case** - Business logic with constructor injection
+4. **DTO** - Data transfer object with `static fromEntity()`
+5. **Repository Implementation** - DynamoDB/external service in Infrastructure
+6. **DI Registration** - Wire dependencies in Container
+7. **Action Adapter** - Thin server action (3-5 lines)
+8. **Components** - UI consuming DTOs
 
-## Feature Directory Structure
+## Directory Structure
 
 ```
-src/features/<feature>/
-├── model/
-│   ├── <feature>-schemas.ts     # Zod schemas + types
-│   └── <feature>-constants.ts   # Constants
-├── dal/
-│   ├── create_<entity>.ts       # snake_case files
-│   ├── find_<entity>_by_id.ts
-│   ├── update_<entity>.ts
-│   └── delete_<entity>.ts
-├── <feature>-service.ts         # Business logic
-├── usecases/
-│   ├── create/actions/<action>.ts
-│   ├── update/actions/<action>.ts
-│   └── delete/actions/<action>.ts
-├── components/
-│   ├── <Component>.tsx
-│   ├── <Component>-server.tsx
-│   └── <Component>-client.tsx
-└── utils/                       # Feature utilities
+src/
+├── backend/
+│   ├── domain/
+│   │   └── <feature>/
+│   │       ├── entities/
+│   │       │   └── <Entity>.ts           # Entity class with validate()
+│   │       ├── repositories/
+│   │       │   └── I<Entity>Repository.ts # Interface only
+│   │       ├── value-objects/
+│   │       │   └── <ValueObject>.ts       # Immutable value types
+│   │       └── exceptions/
+│   │           └── <Feature>Exceptions.ts # Domain exceptions
+│   │
+│   ├── application/
+│   │   └── <feature>/
+│   │       ├── use-cases/
+│   │       │   ├── Create<Entity>UseCase.ts
+│   │       │   ├── Update<Entity>UseCase.ts
+│   │       │   ├── Delete<Entity>UseCase.ts
+│   │       │   └── Get<Entity>UseCase.ts
+│   │       └── dtos/
+│   │           └── <Entity>DTO.ts         # Static fromEntity()
+│   │
+│   ├── infrastructure/
+│   │   ├── <feature>/
+│   │   │   └── repositories/
+│   │   │       └── DynamoDB<Entity>Repository.ts
+│   │   └── di/
+│   │       ├── container.ts              # DI Container
+│   │       └── tokens.ts                 # Injection tokens
+│   │
+│   └── shared/
+│       ├── exceptions/
+│       │   └── BaseException.ts
+│       └── types/
+│           └── index.ts
+│
+├── features/
+│   └── <feature>/
+│       ├── actions/
+│       │   ├── create-<entity>-action.ts  # Thin adapter
+│       │   ├── update-<entity>-action.ts
+│       │   └── index.ts
+│       ├── components/
+│       │   ├── <Component>.tsx
+│       │   └── <Component>-client.tsx
+│       └── index.ts                       # Public exports (DTOs, actions)
+│
+└── app/
+    └── (dashboard)/
+        └── <feature>/
+            └── page.tsx
 ```
 
 ## Layer Responsibilities
 
-### Model Layer
-- Zod schemas for validation
-- TypeScript types (inferred from Zod)
-- Constants and enums
-- **No logic**, only definitions
+### Domain Layer (Innermost)
+- **Entities**: Business objects with behavior, private constructor, `create()`, `fromPersistence()`, `validate()`, `toDTO()`
+- **Repository Interfaces**: Contracts for data access (e.g., `ICategoryRepository`)
+- **Value Objects**: Immutable objects representing concepts (e.g., `Money`, `Email`)
+- **Domain Exceptions**: Business rule violations
+- **NO** external dependencies, **NO** frameworks
 
-### DAL Layer
-- Direct database operations
-- One file per operation
-- snake_case naming
-- Returns `{ success, data?, error? }`
-- Entity-to-model converters
-- **No business logic**
+### Application Layer
+- **Use Cases**: Single-responsibility business operations with `execute()` method
+- **DTOs**: Data structures for crossing boundaries, `static fromEntity()`
+- **Application Services**: Orchestration when needed
+- Uses **constructor injection** for dependencies
+- **NO** direct database access, **NO** HTTP concerns
 
-### Service Layer
-- Business logic and validation
-- Orchestrates DAL calls
-- Permission checks
-- **Called by actions, not directly by UI**
+### Infrastructure Layer
+- **Repository Implementations**: DynamoDB, external APIs
+- **DI Container**: Dependency injection setup
+- **External Service Adapters**: Email, payment, etc.
+- **Throws exceptions** on errors (no `{success, data?, error?}` pattern)
 
-### Actions Layer
-- Server actions for client calls
-- Authentication via `authedProcedure`
-- Input validation with Zod
-- Calls services, NOT DAL
-- Cache revalidation
-
-### Components Layer
-- Server components (default)
-- Client components (interactivity)
-- Split pattern for hybrid needs
-
-### Pages Layer
-- Route definitions
-- Layout composition
-- Data fetching (server components)
-
-## Naming Conventions
-
-| Layer | Case | Example |
-|-------|------|---------|
-| Model files | kebab-case | `account-schemas.ts` |
-| DAL files | snake_case | `create_account.ts` |
-| Service files | kebab-case | `account-service.ts` |
-| Action files | kebab-case | `create-account-action.ts` |
-| Components | PascalCase | `AccountCard.tsx` |
-| Directories | kebab-case | `user-profile/` |
-| Constants | SCREAMING_SNAKE | `MAX_NAME_LENGTH` |
+### Presentation Layer
+- **Server Actions**: Thin adapters (3-5 lines), resolve Use Case from DI, execute, return
+- **Components**: React components receiving DTOs
+- **Pages**: Route definitions
+- **Zod Schemas**: Input shape validation only (not business rules)
 
 ## Data Flow
 
@@ -116,11 +143,19 @@ User Action
     ↓
 Component (client)
     ↓
-Server Action (validates, authenticates)
+Server Action (thin adapter)
     ↓
-Service (business logic)
+    ├── Resolve Use Case from DI Container
+    ├── Execute Use Case
+    └── Return DTO
     ↓
-DAL (database operation)
+Use Case (Application Layer)
+    ↓
+    ├── Create/Load Entity
+    ├── Entity.validate() (business rules)
+    └── Repository.save(entity)
+    ↓
+Repository Implementation (Infrastructure)
     ↓
 DynamoDB
 ```
@@ -129,33 +164,88 @@ DynamoDB
 
 | Need to... | Go to... |
 |------------|----------|
-| Add validation | `model/<feature>-schemas.ts` |
-| Add DB operation | `dal/` (new snake_case file) |
-| Add business rule | `<feature>-service.ts` |
-| Add API endpoint | `usecases/*/actions/` |
-| Add UI element | `components/` |
+| Add business rules | `src/backend/domain/<feature>/entities/<Entity>.ts` → `validate()` |
+| Add data access contract | `src/backend/domain/<feature>/repositories/I<Entity>Repository.ts` |
+| Add business operation | `src/backend/application/<feature>/use-cases/` |
+| Add data shape for UI | `src/backend/application/<feature>/dtos/<Entity>DTO.ts` |
+| Implement repository | `src/backend/infrastructure/<feature>/repositories/` |
+| Add API endpoint | `src/features/<feature>/actions/` (thin adapter) |
+| Add UI element | `src/features/<feature>/components/` |
 | Add page route | `src/app/` |
+| Add input validation | `src/features/<feature>/schemas/` (Zod for shape only) |
 
-## Environment Setup
+## Naming Conventions
+
+| Layer | Type | Convention | Example |
+|-------|------|------------|---------|
+| Domain | Entities | PascalCase | `Category.ts` |
+| Domain | Interfaces | IPascalCase | `ICategoryRepository.ts` |
+| Domain | Exceptions | PascalCase + Exception | `CategoryNotFoundException.ts` |
+| Application | Use Cases | VerbNounUseCase | `CreateCategoryUseCase.ts` |
+| Application | DTOs | PascalCase + DTO | `CategoryDTO.ts` |
+| Infrastructure | Implementations | PrefixPascalCase | `DynamoDBCategoryRepository.ts` |
+| Presentation | Actions | kebab-case | `create-category-action.ts` |
+| Presentation | Components | PascalCase | `CategoryCard.tsx` |
+| Presentation | Schemas | PascalCase + Schema | `CreateCategorySchema.ts` |
+
+## Import Restrictions (Dependency Rule)
+
+```typescript
+// ❌ VIOLATION: Domain importing from Application
+// src/backend/domain/category/entities/Category.ts
+import { CategoryDTO } from '@/backend/application/category/dtos' // WRONG!
+
+// ❌ VIOLATION: Domain importing from Infrastructure
+// src/backend/domain/category/entities/Category.ts
+import { getDynamoDbTable } from '@/backend/infrastructure/database' // WRONG!
+
+// ❌ VIOLATION: Application importing from Infrastructure
+// src/backend/application/category/use-cases/CreateCategoryUseCase.ts
+import { DynamoDBCategoryRepository } from '@/backend/infrastructure' // WRONG!
+
+// ✅ CORRECT: Application imports from Domain
+// src/backend/application/category/use-cases/CreateCategoryUseCase.ts
+import { Category } from '@/backend/domain/category/entities'
+import type { ICategoryRepository } from '@/backend/domain/category/repositories'
+
+// ✅ CORRECT: Infrastructure imports from Domain and Application
+// src/backend/infrastructure/category/repositories/DynamoDBCategoryRepository.ts
+import type { ICategoryRepository } from '@/backend/domain/category/repositories'
+import { Category } from '@/backend/domain/category/entities'
+
+// ✅ CORRECT: Presentation imports from all inner layers
+// src/features/category/actions/create-category-action.ts
+import { CreateCategoryUseCase } from '@/backend/application/category/use-cases'
+import { DIContainer, TOKENS } from '@/backend/infrastructure/di'
+```
+
+## Detection Commands
 
 ```bash
-# Install UV for Python tools
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Domain importing from outer layers (CRITICAL VIOLATION)
+grep -rn "from '@/backend/application\|from '@/backend/infrastructure\|from '@/features/" src/backend/domain/
 
-# Install dependencies
-pnpm install
+# Application importing from Infrastructure (VIOLATION)
+grep -rn "from '@/backend/infrastructure" src/backend/application/
 
-# Development
-pnpm dev
+# Backend importing Next.js (VIOLATION)
+grep -rn "from 'next/\|from 'react\|'use server'" src/backend/
 
-# SST dev mode
-npx sst dev --stage dev
+# Fat server actions (direct DB access - VIOLATION)
+grep -rn "getDynamoDbTable\|getModel" src/features/*/actions/
+
+# Direct instantiation instead of DI (VIOLATION)
+grep -rn "new.*UseCase(\|new.*Repository(" src/features/
+
+# Entity without private constructor (VIOLATION)
+grep -rn "export class" src/backend/domain/*/entities/ -A5 | grep -v "private constructor"
 ```
 
 ## Related Skills
 
-- **zod-validation** - Schema patterns
-- **dynamodb-onetable** - Database patterns
-- **nextjs-server-actions** - Action patterns
-- **nextjs-web-client** - Component patterns
-- **sst-infra** - Deployment patterns
+- **create-domain-module** - Generate complete feature with Clean Architecture
+- **zod-validation** - Input shape validation in Presentation layer
+- **dynamodb-onetable** - Repository implementation patterns
+- **nextjs-server-actions** - Thin adapter action patterns
+- **nextjs-web-client** - Component patterns with DTOs
+- **evaluate-domain-module** - Assess Clean Architecture compliance

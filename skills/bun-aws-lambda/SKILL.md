@@ -1,73 +1,84 @@
 ---
 name: bun-aws-lambda
-description: Bun AWS Lambda expert for creating, deploying, and optimizing Lambda functions using Bun runtime. Use when building Lambda handlers with Bun, setting up custom runtimes, creating container images for Lambda, configuring deployment artifacts, or converting Node.js Lambda handlers to Bun. Triggers on requests involving Bun + Lambda, serverless functions with Bun, Lambda event handling (API Gateway, SQS, SNS, EventBridge, S3, DynamoDB Streams), cold start optimization, or Lambda deployment patterns.
+description: Bun AWS Lambda handlers with Clean Architecture adapter pattern. Handlers resolve Use Cases from DI Container and map domain exceptions to HTTP responses. Covers deployment patterns and cold start optimization.
 ---
 
-# Bun AWS Lambda Expert
+# Bun AWS Lambda (Clean Architecture)
 
-Expert guidance for AWS Lambda functions using Bun runtime. Covers handler creation, deployment patterns, and Node.js migration.
+## Handler Pattern - Thin Adapter
 
-## Handler Template
+Lambda handlers are thin adapters that:
+1. Initialize DI Container (cold start)
+2. Parse input
+3. Resolve Use Case from DI
+4. Execute and return result
+5. Map domain exceptions to HTTP status
 
 ```typescript
+// src/functions/create-category.ts
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda'
+import { DIContainer, TOKENS, initializeDI } from '@/backend/di'
+import type { CreateCategoryUseCase } from '@/backend/application/category/use-cases'
+import { DomainException, NotFoundException } from '@/backend/domain/shared/exceptions'
 
-export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-  try {
-    const { pathParameters, body, queryStringParameters } = event
-    const payload = body ? JSON.parse(body) : undefined
+let initialized = false
 
-    // Business logic here
-
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ success: true }),
-    }
-  } catch (error) {
-    console.error('Handler error:', error)
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Internal server error' }),
-    }
+export async function handler(
+  event: APIGatewayProxyEventV2
+): Promise<APIGatewayProxyResultV2> {
+  if (!initialized) {
+    await initializeDI()
+    initialized = true
   }
+
+  try {
+    const input = JSON.parse(event.body ?? '{}')
+    const userId = event.requestContext.authorizer?.jwt?.claims?.sub
+
+    const useCase = DIContainer.resolve<CreateCategoryUseCase>(
+      TOKENS.CreateCategoryUseCase
+    )
+    const result = await useCase.execute({ ...input, userId })
+
+    return response(201, result)
+  } catch (error) {
+    return handleError(error)
+  }
+}
+
+function response(status: number, data: unknown): APIGatewayProxyResultV2 {
+  return {
+    statusCode: status,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }
+}
+
+function handleError(error: unknown): APIGatewayProxyResultV2 {
+  if (error instanceof NotFoundException) {
+    return response(404, { error: error.message, code: error.code })
+  }
+  if (error instanceof DomainException) {
+    return response(400, { error: error.message, code: error.code })
+  }
+  console.error('Unhandled:', error)
+  return response(500, { error: 'Internal server error' })
 }
 ```
 
-## Event Source Decision
+## Event Source Types
 
 ```
-Which event source?
 ├── HTTP API (API Gateway v2) → APIGatewayProxyEventV2
 ├── REST API (API Gateway v1) → APIGatewayProxyEvent
-├── ALB → ALBEvent
-├── SQS → SQSEvent (with SQSBatchResponse for partial failures)
+├── SQS → SQSEvent
 ├── SNS → SNSEvent
-├── EventBridge → EventBridgeEvent<DetailType>
+├── EventBridge → EventBridgeEvent<T>
 ├── S3 → S3Event
-├── DynamoDB Streams → DynamoDBStreamEvent
-└── Scheduled (Cron) → ScheduledEvent
+└── DynamoDB Streams → DynamoDBStreamEvent
 ```
 
-## Deployment Decision
-
-```
-How to deploy Bun Lambda?
-├── Container Image (Recommended)
-│   ├── Simplest setup
-│   ├── Full control over runtime
-│   └── Cold start: ~300-500ms
-├── Custom Runtime Layer
-│   ├── Smaller package size
-│   ├── Faster cold starts (~100-200ms)
-│   └── More complex setup
-└── Node.js Runtime + Bun Build
-    ├── Simplest if code is Node-compatible
-    └── Use Bun only as bundler
-```
-
-## Container Image Quick Start
+## Deployment: Container Image
 
 ### Dockerfile
 
@@ -89,7 +100,7 @@ RUN chmod +x ${LAMBDA_RUNTIME_DIR}/bootstrap
 CMD ["handler.handler"]
 ```
 
-### Bootstrap (TypeScript)
+### Bootstrap
 
 ```typescript
 // bootstrap.ts
@@ -119,99 +130,102 @@ while (true) {
 }
 ```
 
-## Bun-Specific Patterns
-
-### Environment Variables
+## DI Initialization
 
 ```typescript
-const config = {
-  dbUrl: Bun.env.DATABASE_URL!,
-  apiKey: Bun.env.API_KEY!,
-  stage: Bun.env.STAGE ?? 'dev',
+// src/backend/di/initialize.ts
+import { DIContainer, TOKENS } from './container'
+import { CategoryRepositoryImpl } from '@/backend/infrastructure/category/repositories'
+import { CreateCategoryUseCase, GetCategoryUseCase } from '@/backend/application/category/use-cases'
+
+export async function initializeDI() {
+  const table = await getTable() // OneTable instance
+
+  // Register repositories
+  DIContainer.register(TOKENS.CategoryRepository, {
+    useFactory: () => new CategoryRepositoryImpl(table),
+  })
+
+  // Register use cases
+  DIContainer.register(TOKENS.CreateCategoryUseCase, {
+    useFactory: () => new CreateCategoryUseCase(
+      DIContainer.resolve(TOKENS.CategoryRepository)
+    ),
+  })
+
+  DIContainer.register(TOKENS.GetCategoryUseCase, {
+    useFactory: () => new GetCategoryUseCase(
+      DIContainer.resolve(TOKENS.CategoryRepository)
+    ),
+  })
 }
-```
-
-### File Operations
-
-```typescript
-// Read JSON config
-const config = await Bun.file('config.json').json()
-
-// Write to /tmp
-await Bun.write('/tmp/output.json', JSON.stringify(data))
-```
-
-### Native Fetch
-
-```typescript
-const response = await fetch('https://api.example.com/data', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(payload),
-})
-const data = await response.json()
-```
-
-### Hashing
-
-```typescript
-const hash = Bun.hash(content, 'sha256').toString(16)
 ```
 
 ## Cold Start Optimization
 
-1. **Bundle with Bun**: Single file, tree-shaken
-2. **Lazy initialization**: Load heavy deps on first request
-3. **Use AWS SDK v3**: Modular imports
-4. **Minimize dependencies**: Native fetch, no axios
-5. **Consider provisioned concurrency**: For latency-critical
+1. **Lazy DI init** - Initialize container on first request only
+2. **Bundle with Bun** - Single file, tree-shaken
+3. **AWS SDK v3** - Modular imports
+4. **Minimal deps** - Use native fetch, Bun APIs
 
 ```typescript
-// Lazy initialization pattern
-let db: DatabaseClient | null = null
+// Lazy repository initialization
+let repository: ICategoryRepository | null = null
 
-async function getDb() {
-  if (!db) {
-    const { DatabaseClient } = await import('./db')
-    db = new DatabaseClient(Bun.env.DATABASE_URL!)
+function getRepository(): ICategoryRepository {
+  if (!repository) {
+    repository = DIContainer.resolve(TOKENS.CategoryRepository)
   }
-  return db
+  return repository
 }
 ```
 
-## Best Practices
+## SQS Handler Example
 
-1. **Types**: Always use `aws-lambda` types for event/response
-2. **Error Handling**: Catch all errors, return proper HTTP status
-3. **Logging**: Use `console.error` for errors (CloudWatch compatible)
-4. **Validation**: Validate input early, fail fast
-5. **Idempotency**: Design for retries on async event sources
-6. **Timeouts**: Set appropriate Lambda timeout for use case
+```typescript
+// src/functions/process-queue.ts
+import type { SQSEvent, SQSBatchResponse } from 'aws-lambda'
+import { DIContainer, TOKENS, initializeDI } from '@/backend/di'
+import type { ProcessMessageUseCase } from '@/backend/application/messaging/use-cases'
+
+let initialized = false
+
+export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+  if (!initialized) {
+    await initializeDI()
+    initialized = true
+  }
+
+  const useCase = DIContainer.resolve<ProcessMessageUseCase>(
+    TOKENS.ProcessMessageUseCase
+  )
+
+  const failures: SQSBatchResponse['batchItemFailures'] = []
+
+  for (const record of event.Records) {
+    try {
+      const message = JSON.parse(record.body)
+      await useCase.execute(message)
+    } catch (error) {
+      console.error(`Failed record ${record.messageId}:`, error)
+      failures.push({ itemIdentifier: record.messageId })
+    }
+  }
+
+  return { batchItemFailures: failures }
+}
+```
+
+## Anti-Patterns
+
+| Anti-Pattern | Correct Approach |
+|--------------|-----------------|
+| Business logic in handler | Use Case classes |
+| Direct DB access in handler | Repository via DI |
+| `new Repository()` in handler | DI Container resolution |
+| Generic error responses | Map domain exceptions |
 
 ## References
 
-Detailed patterns and examples:
-
-- **[event-sources.md](references/event-sources.md)**: Event structures for API Gateway, SQS, SNS, EventBridge, S3, DynamoDB Streams
-- **[deployment-patterns.md](references/deployment-patterns.md)**: Container images, custom runtime layers, IaC templates (CDK, SAM, Terraform, SST)
-- **[nodejs-migration.md](references/nodejs-migration.md)**: Converting Node.js handlers to Bun, API compatibility
-
-## Skill Interface
-
-When using this skill, provide:
-
-```json
-{
-  "lambdaDescription": "What the function does, inputs, outputs, event source",
-  "bunConstraints": "Bun version, ESM/CJS, HTTP framework preferences",
-  "deploymentContext": "Container image, Lambda layer, API Gateway, SQS trigger, etc.",
-  "existingCode": "(optional) Node.js code to convert",
-  "nonFunctionalRequirements": "(optional) Latency, cold start, observability needs"
-}
-```
-
-Response includes:
-- **handlerCode**: Complete Bun Lambda handler code
-- **runtimeNotes**: Bun-specific considerations and choices
-- **deploymentHints**: IaC integration advice
-- **nextSteps**: Testing, hardening, observability suggestions
+- Feature Architecture: `skills/feature-architecture/SKILL.md`
+- SST Infrastructure: `skills/sst-infra/SKILL.md`

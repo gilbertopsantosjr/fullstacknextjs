@@ -1,15 +1,19 @@
 ---
 name: tanstack-react-query
-description: TanStack React Query expert for data fetching and mutations in React applications. Use when working with useQuery, useMutation, cache invalidation, optimistic updates, query keys, or integrating server actions with React Query via @saas4dev/core hooks (useServerActionQuery, useServerActionMutation, useServerActionInfiniteQuery). Triggers on requests involving API data fetching, server state management, cache strategies, or converting fetch/useEffect patterns to React Query.
+description: TanStack React Query for data fetching with Clean Architecture. Queries return DTOs, mutations call server actions. Use when working with useQuery, useMutation, cache invalidation, or integrating ZSA server actions.
 ---
 
-# TanStack React Query Expert
+# TanStack React Query (Clean Architecture)
 
-Expert guidance for idiomatic React Query (TanStack Query v5) patterns in React applications, with special focus on ZSA server action integration via `@saas4dev/core`.
+## Data Flow with DTOs
+
+```
+useServerActionQuery → Server Action → Use Case → DTO
+```
+
+All query responses are **DTOs**, not Entities. TypeScript types should reflect this.
 
 ## Core Hooks
-
-### From @saas4dev/core (Server Actions)
 
 ```typescript
 import {
@@ -17,152 +21,125 @@ import {
   useServerActionMutation,
   useServerActionInfiniteQuery,
 } from '@saas4dev/core'
+
+import { useQueryClient } from '@tanstack/react-query'
 ```
 
-### From @tanstack/react-query (Direct API)
+## Query with DTO Types
 
 ```typescript
-import {
-  useQuery,
-  useMutation,
-  useInfiniteQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
-```
+import type { CategoryDTO } from '@/features/category'
+import { listCategoriesAction, getCategoryAction } from '@/features/category'
 
-## Decision Tree
-
-```
-Need to fetch data?
-├── From server action → useServerActionQuery
-├── From REST/fetch directly → useQuery
-└── Paginated/infinite → useServerActionInfiniteQuery or useInfiniteQuery
-
-Need to modify data?
-├── From server action → useServerActionMutation
-└── From REST/fetch directly → useMutation
-
-After mutation, what cache behavior?
-├── Simple: just invalidate → queryClient.invalidateQueries()
-├── Update specific item → queryClient.setQueryData()
-└── Need instant feedback → Optimistic update pattern
-```
-
-## Quick Patterns
-
-### Server Action Query
-
-```typescript
-const { data, isLoading } = useServerActionQuery(listUsersAction, {
+// List query - returns CategoryDTO[]
+const { data, isLoading } = useServerActionQuery(listCategoriesAction, {
   input: { status: 'active' },
-  queryKey: ['users', 'list', { status: 'active' }],
+  queryKey: ['categories', 'list', { status: 'active' }],
 })
+
+// data.items is CategoryDTO[]
+
+// Single item query
+const { data: category } = useServerActionQuery(getCategoryAction, {
+  input: { id },
+  queryKey: ['categories', 'detail', id],
+})
+
+// category is CategoryDTO
 ```
 
-### Server Action Mutation with Invalidation
+## Mutation with Invalidation
 
 ```typescript
+import { createCategoryAction } from '@/features/category'
+
 const queryClient = useQueryClient()
 
-const mutation = useServerActionMutation(createUserAction, {
+const mutation = useServerActionMutation(createCategoryAction, {
   onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ['users'] })
-    toast.success('User created')
+    queryClient.invalidateQueries({ queryKey: ['categories'] })
+    toast.success('Category created')
   },
   onError: (error) => toast.error(error.message),
 })
+
+// Usage
+mutation.mutate({ name: 'New Category' })
 ```
 
-### Optimistic Update
+## Query Key Pattern
 
 ```typescript
-const mutation = useServerActionMutation(updateTodoAction, {
-  onMutate: async (newData) => {
-    await queryClient.cancelQueries({ queryKey: ['todos', newData.id] })
-    const previous = queryClient.getQueryData(['todos', newData.id])
-    queryClient.setQueryData(['todos', newData.id], (old) => ({ ...old, ...newData }))
-    return { previous }
-  },
-  onError: (err, newData, context) => {
-    queryClient.setQueryData(['todos', newData.id], context?.previous)
-  },
-  onSettled: (data, err, variables) => {
-    queryClient.invalidateQueries({ queryKey: ['todos', variables.id] })
-  },
-})
-```
-
-## Query Key Structure
-
-### Hierarchy Pattern
-
-```typescript
-['entity']                           // All of entity
-['entity', 'list']                   // All lists
-['entity', 'list', { filters }]      // Filtered list
-['entity', 'detail', id]             // Single item
-['entity', id, 'nested']             // Nested resource
+// Hierarchical keys for precise invalidation
+['categories']                           // All categories
+['categories', 'list']                   // All lists
+['categories', 'list', { status }]       // Filtered list
+['categories', 'detail', id]             // Single item
 ```
 
 ### Query Key Factory
 
 ```typescript
-export const userKeys = {
-  all: ['users'] as const,
-  lists: () => [...userKeys.all, 'list'] as const,
-  list: (filters: Filters) => [...userKeys.lists(), filters] as const,
-  details: () => [...userKeys.all, 'detail'] as const,
-  detail: (id: string) => [...userKeys.details(), id] as const,
+export const categoryKeys = {
+  all: ['categories'] as const,
+  lists: () => [...categoryKeys.all, 'list'] as const,
+  list: (filters: { status?: string }) => [...categoryKeys.lists(), filters] as const,
+  details: () => [...categoryKeys.all, 'detail'] as const,
+  detail: (id: string) => [...categoryKeys.details(), id] as const,
 }
 ```
 
-## Configuration Defaults
+## Optimistic Update
 
 ```typescript
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 60 * 1000,        // 1 minute
-      gcTime: 5 * 60 * 1000,       // 5 minutes
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
+const mutation = useServerActionMutation(updateCategoryAction, {
+  onMutate: async (newData) => {
+    await queryClient.cancelQueries({ queryKey: ['categories', 'detail', newData.id] })
+    const previous = queryClient.getQueryData<CategoryDTO>(['categories', 'detail', newData.id])
+
+    queryClient.setQueryData<CategoryDTO>(
+      ['categories', 'detail', newData.id],
+      (old) => old ? { ...old, ...newData } : old
+    )
+
+    return { previous }
+  },
+  onError: (err, newData, context) => {
+    if (context?.previous) {
+      queryClient.setQueryData(['categories', 'detail', newData.id], context.previous)
+    }
+  },
+  onSettled: (_, __, variables) => {
+    queryClient.invalidateQueries({ queryKey: ['categories', 'detail', variables.id] })
   },
 })
 ```
 
+## Pagination
+
+```typescript
+const { data, fetchNextPage, hasNextPage } = useServerActionInfiniteQuery(
+  listCategoriesAction,
+  {
+    queryKey: ['categories', 'list'],
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    initialPageParam: undefined,
+    input: ({ pageParam }) => ({ cursor: pageParam, limit: 20 }),
+  }
+)
+
+// data.pages[].items is CategoryDTO[]
+```
+
 ## Best Practices
 
-1. **Query Keys**: Use hierarchical keys; invalidate broadly, fetch specifically
-2. **Mutations**: Always invalidate or update related queries on success
-3. **Loading States**: Use `isLoading` for first load, `isFetching` for background updates
-4. **Error Handling**: Handle in `onError` callback; show user-friendly messages
-5. **Optimistic Updates**: Use for high-confidence mutations; always implement rollback
-6. **Conditional Queries**: Use `enabled` option, not conditional hook calls
-7. **Derived Data**: Use `select` to transform data; keeps original in cache
+1. **Type with DTOs** - `useQueryData<CategoryDTO>()` not `Category`
+2. **Actions only** - Never call Use Cases from components
+3. **Hierarchical keys** - Invalidate broadly, fetch specifically
+4. **Error handling** - Show domain exception messages
+5. **Optimistic updates** - Always implement rollback
 
 ## References
 
-Detailed patterns and examples:
-
-- **[query-patterns.md](references/query-patterns.md)**: Query keys, useQuery, pagination, parallel/dependent queries
-- **[mutation-patterns.md](references/mutation-patterns.md)**: Mutations, cache invalidation, optimistic updates, rollback
-- **[advanced-patterns.md](references/advanced-patterns.md)**: Custom hooks, prefetching, SSR hydration, testing
-
-## Skill Interface
-
-When using this skill, provide:
-
-```json
-{
-  "apiDescription": "REST/GraphQL endpoints, methods, parameters, response shapes",
-  "uiScenario": "What the UI needs (e.g., 'List with pagination', 'Edit form with instant feedback')",
-  "constraints": "React Query v5, fetch vs axios, suspense vs traditional",
-  "currentCode": "(optional) Existing code to improve"
-}
-```
-
-Response includes:
-- **recommendations**: Query keys, hooks, invalidation strategy
-- **exampleCode**: React components/hooks demonstrating patterns
-- **notes**: Why these patterns were chosen
+- Web Client: `skills/nextjs-web-client/SKILL.md`
+- Server Actions: `skills/nextjs-server-actions/SKILL.md`

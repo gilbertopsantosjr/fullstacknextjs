@@ -1,52 +1,87 @@
 ---
 name: nextjs-web-client
-description: Guide for building Next.js 15+ React 19+ frontend components with App Router, Shadcn UI, and React Hook Form. Use when creating UI components, pages, layouts, forms, data tables, or client-side interactivity in a Next.js application.
+description: Guide for building Next.js 15+ React 19+ frontend components with Clean Architecture. Components receive DTOs from server actions, never Entities directly. Use when creating UI components, pages, layouts, forms, or client-side interactivity.
 ---
 
 # Next.js Web Client Development
 
+## Clean Architecture Data Flow
+
+Components receive **DTOs** from server actions, never Entities:
+
+```
+Component → Server Action → Use Case → Repository → DB
+                                ↓
+                              DTO (returned)
+```
+
+## Importing from Features
+
+```typescript
+// ✅ CORRECT: Import DTOs and actions
+import type { CategoryDTO } from '@/features/category'
+import { listCategoriesAction, createCategoryAction } from '@/features/category'
+
+// ❌ WRONG: Never import from backend directly
+import { Category } from '@/backend/domain/category/entities' // VIOLATION!
+import { CreateCategoryUseCase } from '@/backend/application/category' // VIOLATION!
+```
+
 ## Server vs Client Components
 
-**Default to Server Components** unless you need:
-- Event handlers (onClick, onChange)
-- Browser APIs (window, localStorage)
-- React hooks (useState, useEffect)
-
-### Component Split Pattern
-
-For components needing server data + client interactivity:
+**Default to Server Components** unless you need interactivity:
 
 ```
 components/
-├── AccountForm.tsx              # Re-exports server component
-├── AccountForm-server.tsx       # Fetches data, passes to client
-└── AccountForm-client.tsx       # 'use client', handles interactions
+├── CategoryList.tsx           # Server component (default)
+├── CategoryForm.tsx           # Re-exports server
+├── CategoryForm-server.tsx    # Calls action, passes DTO
+└── CategoryForm-client.tsx    # 'use client', handles form
 ```
+
+### Server Component with Action
 
 ```typescript
-// AccountForm-server.tsx
-import { AccountFormClient } from './AccountForm-client'
-export async function AccountForm() {
-  const data = await fetchData()
-  return <AccountFormClient data={data} />
-}
+// CategoryList.tsx (Server Component)
+import type { CategoryDTO } from '@/features/category'
+import { listCategoriesAction } from '@/features/category'
 
-// AccountForm-client.tsx
+export async function CategoryList() {
+  const [result, err] = await listCategoriesAction({})
+
+  if (err) return <div>Error loading categories</div>
+
+  return (
+    <ul>
+      {result.items.map((category: CategoryDTO) => (
+        <li key={category.id}>{category.name}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Client Component with Mutation
+
+```typescript
+// CategoryForm-client.tsx
 'use client'
-export function AccountFormClient({ data }: Props) {
-  const [state, setState] = useState(data)
-  return <form>...</form>
+import { useServerAction } from 'zsa-react'
+import { createCategoryAction } from '@/features/category'
+import type { CreateCategoryInput } from '@/features/category'
+
+export function CategoryFormClient() {
+  const { execute, isPending, error } = useServerAction(createCategoryAction)
+
+  const onSubmit = async (data: CreateCategoryInput) => {
+    const [result, err] = await execute(data)
+    if (err) return toast.error(err.message)
+    toast.success('Created!')
+  }
+
+  return <form onSubmit={handleSubmit(onSubmit)}>...</form>
 }
 ```
-
-## Shadcn UI
-
-Install components via CLI:
-```bash
-npx shadcn@latest add button input form dialog table card
-```
-
-Components copy to `src/components/ui/` - customize directly.
 
 ## Forms with React Hook Form
 
@@ -54,98 +89,53 @@ Components copy to `src/components/ui/` - customize directly.
 'use client'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+import { CreateCategorySchema, type CreateCategoryInput } from '@/features/category'
+import { createCategoryAction } from '@/features/category'
 
-export function CreateForm() {
-  const form = useForm<FormInput>({
-    resolver: zodResolver(FormSchema),
+export function CreateCategoryForm() {
+  const form = useForm<CreateCategoryInput>({
+    resolver: zodResolver(CreateCategorySchema),
     defaultValues: { name: '' },
   })
+
+  const { execute, isPending } = useServerAction(createCategoryAction)
+
+  const onSubmit = async (data: CreateCategoryInput) => {
+    const [result, err] = await execute(data)
+    if (err) return form.setError('root', { message: err.message })
+    // Success handling
+  }
 
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)}>
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Name</FormLabel>
-              <FormControl><Input {...field} /></FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <Button type="submit">Submit</Button>
+        <FormField name="name" ... />
+        <Button type="submit" disabled={isPending}>Create</Button>
       </form>
     </Form>
   )
 }
 ```
 
-## Dynamic Imports
-
-Use for conditionally rendered components:
+## Data Tables with DTOs
 
 ```typescript
-import dynamic from 'next/dynamic'
+import type { CategoryDTO } from '@/features/category'
 
-const EditDialog = dynamic(() => import('./EditDialog'))
-const SettingsTab = dynamic(() => import('./tabs/SettingsTab'))
-
-// Only load when needed
-{showEdit && <EditDialog />}
-{tab === 'settings' && <SettingsTab />}
-```
-
-## Loading & Error States
-
-```typescript
-// loading.tsx (in route folder)
-export default function Loading() {
-  return <Skeleton className="h-[200px]" />
-}
-
-// error.tsx (in route folder)
-'use client'
-export default function Error({ error, reset }: { error: Error; reset: () => void }) {
-  return (
-    <div>
-      <p>Something went wrong</p>
-      <Button onClick={reset}>Try again</Button>
-    </div>
-  )
-}
-
-// With Suspense
-<Suspense fallback={<LoadingSkeleton />}>
-  <AsyncComponent />
-</Suspense>
-```
-
-## Data Tables
-
-```typescript
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-
-export function DataTable({ items }: { items: Item[] }) {
+export function CategoryTable({ items }: { items: CategoryDTO[] }) {
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Name</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead className="w-[100px]">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {items.map((item) => (
-          <TableRow key={item.id}>
-            <TableCell>{item.name}</TableCell>
-            <TableCell>{item.status}</TableCell>
-            <TableCell><Button size="sm">Edit</Button></TableCell>
+        {items.map((category) => (
+          <TableRow key={category.id}>
+            <TableCell>{category.name}</TableCell>
+            <TableCell>{category.status}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -154,37 +144,37 @@ export function DataTable({ items }: { items: Item[] }) {
 }
 ```
 
-## Route Protection (middleware.ts)
-
-```typescript
-// src/middleware.ts
-import { NextRequest, NextResponse } from 'next/server'
-import { authServer } from '@saas4dev/auth'
-
-const protectedRoutes = ['/dashboard', '/settings']
-
-export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl
-  const isProtected = protectedRoutes.some(r => pathname.startsWith(r))
-
-  const session = await authServer.api.getSession({
-    headers: await headers(),
-  })
-
-  if (isProtected && !session) {
-    const url = new URL('/sign-in', request.url)
-    url.searchParams.set('redirect', pathname)
-    return NextResponse.redirect(url)
-  }
-  return NextResponse.next()
-}
-```
-
-## Naming Conventions
+## Component Naming
 
 | Type | Case | Example |
 |------|------|---------|
-| Components | PascalCase | `AccountCard.tsx` |
-| Hooks | use-kebab | `use-account-form.ts` |
-| Pages | kebab-case dirs | `app/(dashboard)/accounts/page.tsx` |
-| Route groups | (parentheses) | `(auth)`, `(dashboard)` |
+| Components | PascalCase | `CategoryCard.tsx` |
+| Client suffix | -client | `CategoryForm-client.tsx` |
+| Server suffix | -server | `CategoryForm-server.tsx` |
+| Hooks | use-kebab | `use-category-form.ts` |
+| Pages | kebab-case | `app/(dashboard)/categories/page.tsx` |
+
+## Rules for Components
+
+1. **Import DTOs** from feature index, never Entities
+2. **Call actions** for data operations, never Use Cases directly
+3. **Type with DTOs** - `items: CategoryDTO[]` not `items: Category[]`
+4. **Handle errors** from action `[result, err]` tuple
+5. **No backend imports** - features are the boundary
+
+## Detection Commands
+
+```bash
+# Components importing from backend (VIOLATION)
+grep -rn "from '@/backend/" src/features/*/components/
+grep -rn "from '@/backend/" src/app/
+
+# Components importing Entities (VIOLATION)
+grep -rn "import.*Entity" src/features/*/components/
+grep -rn "import.*Entity" src/app/
+```
+
+## References
+
+- Server Actions: `skills/nextjs-server-actions/SKILL.md`
+- React Query: `skills/tanstack-react-query/SKILL.md`
