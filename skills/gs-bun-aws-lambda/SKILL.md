@@ -1,5 +1,5 @@
 ---
-name: bun-aws-lambda
+name: gs-bun-aws-lambda
 description: Bun AWS Lambda handlers with Clean Architecture adapter pattern. Handlers resolve Use Cases from DI Container and map domain exceptions to HTTP responses. Covers deployment patterns and cold start optimization.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: modularity-maturity-assessor
+name: gs-modularity-maturity-assessor
 description: Assesses Clean Architecture compliance and maturity levels. Evaluates Dependency Rule, Entity patterns, Use Cases, Repository pattern, DI Container, and thin actions.
 ---
 

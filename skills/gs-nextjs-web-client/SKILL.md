@@ -1,5 +1,5 @@
 ---
-name: nextjs-web-client
+name: gs-nextjs-web-client
 description: Guide for building Next.js 15+ React 19+ frontend components with Clean Architecture. Components receive DTOs from server actions, never Entities directly. Use when creating UI components, pages, layouts, forms, or client-side interactivity.
 ---
 

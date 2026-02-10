@@ -1,5 +1,5 @@
 ---
-name: santry-observability
+name: gs-santry-observability
 description: Sentry observability for Clean Architecture layers. Error tracking per layer, transaction tracing for Use Cases, user context in procedures, and performance monitoring.
 ---
 

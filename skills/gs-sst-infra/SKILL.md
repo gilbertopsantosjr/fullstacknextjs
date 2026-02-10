@@ -1,5 +1,5 @@
 ---
-name: sst-infra
+name: gs-sst-infra
 description: Guide for AWS serverless infrastructure using SST v3. Covers DynamoDB, Next.js deployment, Lambda handlers with Clean Architecture adapter pattern, and CI/CD configuration.
 ---
 

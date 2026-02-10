@@ -1,5 +1,5 @@
 ---
-name: zod-validation
+name: gs-zod-validation
 description: "Guide for Zod validation schemas in Clean Architecture. Zod validates input SHAPE in Presentation layer; business rules belong in Entity.validate(). Use when creating input schemas for server actions."
 ---
 

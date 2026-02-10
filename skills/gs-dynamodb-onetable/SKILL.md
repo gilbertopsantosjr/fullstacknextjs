@@ -1,5 +1,5 @@
 ---
-name: dynamodb-onetable
+name: gs-dynamodb-onetable
 description: Guide for DynamoDB single-table design with Repository pattern using OneTable ORM. Use when implementing Repository classes in the Infrastructure layer, designing database schemas, or handling data persistence for Clean Architecture.
 ---
 

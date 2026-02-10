@@ -1,5 +1,5 @@
 ---
-name: nextjs-server-actions
+name: gs-nextjs-server-actions
 description: "Guide for implementing thin adapter server actions using ZSA. Actions resolve Use Cases from DI Container and delegate business logic. Use when creating API endpoints in the Presentation layer."
 ---
 

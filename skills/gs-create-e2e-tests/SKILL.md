@@ -1,5 +1,5 @@
 ---
-name: create-e2e-tests
+name: gs-create-e2e-tests
 description: Creates tests following Clean Architecture test layers. Entity tests (pure unit), Use Case tests (mock repositories), Repository tests (DynamoDB Local), E2E tests (full flow). Uses Vitest and DI Container mocking.
 ---
 

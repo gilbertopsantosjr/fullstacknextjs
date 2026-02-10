@@ -1,6 +1,6 @@
 ---
 description: Evaluates feature modules for Clean Architecture compliance including Dependency Rule violations, layer separation, Entity patterns, Use Case classes, and DI Container usage.
-name: evaluate-domain-module
+name: gs-evaluate-domain-module
 ---
 
 # Feature Module Evaluator (Clean Architecture)

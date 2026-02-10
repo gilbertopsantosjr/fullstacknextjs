@@ -1,5 +1,5 @@
 ---
-name: tanstack-react-query
+name: gs-tanstack-react-query
 description: TanStack React Query for data fetching with Clean Architecture. Queries return DTOs, mutations call server actions. Use when working with useQuery, useMutation, cache invalidation, or integrating ZSA server actions.
 ---
 

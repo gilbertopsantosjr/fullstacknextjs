@@ -1,5 +1,5 @@
 ---
-name: feature-architecture
+name: gs-feature-architecture
 description: Guide for implementing features in Clean Architecture OOP with Next.js. Use when planning new features, understanding the 4-layer structure (Domain, Application, Infrastructure, Presentation), or deciding where code should live.
 ---
 

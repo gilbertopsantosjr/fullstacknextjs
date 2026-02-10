@@ -1,6 +1,6 @@
 ---
 description: Creates complete, production-ready feature modules following Clean Architecture OOP principles with Entities, Use Cases, Repository pattern, DI Container, and thin adapter actions. Adapted for Next.js 15+, DynamoDB/OneTable, ZSA, and Vitest.
-name: create-domain-module
+name: gs-create-domain-module
 ---
 
 # Feature Module Generator (Clean Architecture OOP)
